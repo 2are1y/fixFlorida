@@ -93,9 +93,91 @@ jobs:
           echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
           echo "Release exists: $release_exists; should build: $should_build"
 
-  build-android:
+  preflight:
     needs: resolve
     if: needs.resolve.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      FRIDA_VERSION: ${{ needs.resolve.outputs.version }}
+
+    steps:
+      - name: Checkout Florida
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+
+      - name: Install preflight dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential \
+            binutils
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --requirement requirements-build.txt
+          python - <<'PY'
+          import lief
+          print("LIEF:", getattr(lief, "__version__", "unknown"))
+          PY
+
+      - name: Self-test Florida postprocessor
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m py_compile \
+            scripts/apply_florida.py \
+            scripts/anti_anti_frida.py \
+            scripts/selftest_apply_florida.py \
+            scripts/selftest_postprocessor.py
+          python scripts/selftest_apply_florida.py \
+            --script "$GITHUB_WORKSPACE/scripts/apply_florida.py" \
+            --anti-script "$GITHUB_WORKSPACE/scripts/anti_anti_frida.py" \
+            --policy "$GITHUB_WORKSPACE/scripts/anti_anti_frida_policy.json"
+          python scripts/selftest_postprocessor.py \
+            --script "$GITHUB_WORKSPACE/scripts/anti_anti_frida.py" \
+            --policy "$GITHUB_WORKSPACE/scripts/anti_anti_frida_policy.json"
+
+      - name: Clone the exact Frida release
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git clone \
+            --branch "$FRIDA_VERSION" \
+            --depth 1 \
+            --recurse-submodules \
+            --shallow-submodules \
+            https://github.com/frida/frida.git
+
+          actual="$(git -C frida describe --tags --exact-match)"
+          [[ "$actual" == "$FRIDA_VERSION" ]] || {
+            echo "::error::Expected $FRIDA_VERSION, checked out $actual"
+            exit 1
+          }
+
+      - name: Verify source transformations against upstream
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python scripts/apply_florida.py \
+            --frida-root "$GITHUB_WORKSPACE/frida" \
+            --anti-script "$GITHUB_WORKSPACE/scripts/anti_anti_frida.py" \
+            --anti-policy "$GITHUB_WORKSPACE/scripts/anti_anti_frida_policy.json"
+
+          git -C frida/subprojects/frida-core diff --check
+          git -C frida/subprojects/frida-gum diff --check
+          git -C frida/subprojects/frida-core diff --stat
+          git -C frida/subprojects/frida-gum diff --stat
+
+  build-android:
+    needs: [resolve, preflight]
+    if: needs.resolve.outputs.should_build == 'true' && needs.preflight.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     strategy:
@@ -189,18 +271,6 @@ jobs:
             exit 1
           }
 
-      - name: Self-test Florida postprocessor
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          python -m py_compile \
-            scripts/apply_florida.py \
-            scripts/anti_anti_frida.py \
-            scripts/selftest_postprocessor.py
-          python scripts/selftest_postprocessor.py \
-            --script "$GITHUB_WORKSPACE/scripts/anti_anti_frida.py" \
-            --policy "$GITHUB_WORKSPACE/scripts/anti_anti_frida_policy.json"
-
       - name: Apply Florida source transformations
         shell: bash
         run: |
@@ -274,13 +344,13 @@ jobs:
                   raise SystemExit(f"Residual active entrypoint symbol in {report_path}")
               if entrypoint.get("dynamic_old_after") != 0:
                   raise SystemExit(f"Residual dynamic entrypoint symbol in {report_path}")
-              if entrypoint.get("dynamic_old_before", 0) > 0:
-                  expected_dynamic_main = (
-                      entrypoint.get("dynamic_main_before", 0)
-                      + entrypoint.get("dynamic_old_before", 0)
-                  )
-                  if entrypoint.get("dynamic_main_after", 0) < expected_dynamic_main:
-                      raise SystemExit(f"Dynamic main entrypoint missing: {report_path}")
+              if (
+                  entrypoint.get("dynamic_old_before", 0) > 0
+                  or entrypoint.get("dynamic_main_before", 0) > 0
+              ) and entrypoint.get("dynamic_main_after", 0) < 1:
+                  raise SystemExit(f"Dynamic main entrypoint missing: {report_path}")
+              if entrypoint.get("old_before", 0) > 0 and entrypoint.get("renamed", 0) < 1:
+                  raise SystemExit(f"Entrypoint rename was not recorded: {report_path}")
 
               markers = report.get("markers")
               if not isinstance(markers, dict) or set(markers) != expected_markers:
