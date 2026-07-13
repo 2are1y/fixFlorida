@@ -81,7 +81,12 @@ def patch_rpc(core: Path) -> None:
         "\t\t\treturn quoted ? \"\\\"\" + marker + \"\\\"\" : marker;\n"
         "\t\t}\n\n"
     )
-    insert_before_once(path, signature, helper, "get_rpc_marker")
+    insert_before_once(
+        path,
+        signature,
+        helper,
+        "private static string get_rpc_marker (bool quoted = false)",
+    )
     replace_once(path, '.add_string_value ("frida:rpc")', ".add_string_value (get_rpc_marker ())")
     replace_once(
         path,

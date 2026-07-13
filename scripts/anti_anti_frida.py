@@ -223,28 +223,25 @@ def validate_entrypoint_after(
                 f"renamed {renamed_count}"
             )
 
-        expected_main = before["main_before"] + before["old_before"]
-        if main_after < expected_main:
+        # LIEF may merge equivalent entries while rebuilding .symtab and .dynsym.
+        # Symbol-table multiplicity is therefore not stable across binary.write().
+        # What matters is that the old name is gone and a dynamically exported
+        # replacement entrypoint remains resolvable.
+        if main_after < 1:
             raise RuntimeError(
-                f"Expected at least {expected_main} main symbol(s) after rewriting, "
-                f"found {main_after}"
+                "The rewritten main entrypoint was not found after ELF rebuilding"
             )
 
-        if before["dynamic_old_before"] > 0:
-            expected_dynamic_main = (
-                before["dynamic_main_before"] + before["dynamic_old_before"]
+        if before["dynamic_old_before"] > 0 and dynamic_main_after < 1:
+            raise RuntimeError(
+                "The rewritten main entrypoint is not dynamically exported after ELF rebuilding"
             )
-            if dynamic_main_after < expected_dynamic_main:
-                raise RuntimeError(
-                    "The rewritten dynamic main entrypoint count is lower than expected: "
-                    f"expected at least {expected_dynamic_main}, found {dynamic_main_after}"
-                )
     elif policy.entrypoint == "allow-prepatched-main":
         if main_after == 0:
             raise RuntimeError("Prepatched main entrypoint disappeared after ELF rewriting")
-        if before["dynamic_main_before"] > 0 and dynamic_main_after < before["dynamic_main_before"]:
+        if before["dynamic_main_before"] > 0 and dynamic_main_after < 1:
             raise RuntimeError(
-                "The prepatched dynamic main entrypoint disappeared after ELF rewriting"
+                "The prepatched main entrypoint is no longer dynamically exported"
             )
 
     return {
