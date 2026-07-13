@@ -1,0 +1,12 @@
+{
+  "entrypoint": "require-frida-agent-main",
+  "markers": {
+    "gum-js-loop": "required",
+    "gmain": "required",
+    "FridaScriptEngine": "optional",
+    "GLib-GIO": "optional",
+    "GDBusProxy": "optional",
+    "GumScript": "optional",
+    "gdbus": "optional"
+  }
+}
